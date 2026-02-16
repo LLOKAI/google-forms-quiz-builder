@@ -1,6 +1,6 @@
-# Google Forms Quiz Builder
+# Google Forms Quiz Builder + Google Classroom
 
-Turn a **Google Sheet of questions** into a fully published **Google Forms Quiz** with points, sections, and answer keys, all generated automatically using Apps Script.
+Turn a **Google Sheet of questions** into a fully published **Google Forms Quiz** with points, sections, and answer keys, then **post it directly to Google Classroom** — all generated automatically using Apps Script.
 
 ---
 
@@ -12,8 +12,12 @@ Turn a **Google Sheet of questions** into a fully published **Google Forms Quiz*
   - **PARA** – Paragraph
   - **MCQ** – Multiple Choice (one correct)
   - **MSQ** – Multiple Select (checkboxes, multiple correct)
+- **Image support** — add an `ImageURL` column to embed images in questions
 - Metadata support (`FormTitle`, `FormDescription`, `LimitOneResponse`)
 - Points system with **section totals**
+- **Google Classroom integration** — post quizzes as graded assignments or class materials
+  - Select course, topic, due date, max points
+  - One-click or two-step workflow
 - Automatically:
   - Creates quiz form (from template or fresh)
   - Publishes & shares student link
