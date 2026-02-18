@@ -1,5 +1,5 @@
 /***** CONFIG *****/
-const TEMPLATE_FORM_ID = "1kANsPRys7UKT9G9AKmeDeuBqZkgb984-gqIUruYTLpg"; // '' to disable
+const TEMPLATE_FORM_ID = ""; // '' to disable
 const MAKE_PUBLIC_ANYONE_WITH_LINK = true; // set false if you only want your domain/responders list
 
 /***** MENU *****/
@@ -7,7 +7,10 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("Form Builder")
     .addItem("Create Form (Confirm)", "confirmAndCreateForm")
-    .addItem("Create Form & Post to Classroom", "confirmCreateAndPostToClassroom")
+    .addItem(
+      "Create Form & Post to Classroom",
+      "confirmCreateAndPostToClassroom",
+    )
     .addSeparator()
     .addItem("Post Last Form to Classroom", "postLastFormToClassroom")
     .addToUi();
@@ -19,7 +22,7 @@ function confirmAndCreateForm() {
   const res = ui.alert(
     "Create Form",
     "Create a new Google Form quiz and link responses to this spreadsheet (new tab)?",
-    ui.ButtonSet.OK_CANCEL
+    ui.ButtonSet.OK_CANCEL,
   );
   if (res !== ui.Button.OK) return;
 
@@ -29,7 +32,7 @@ function confirmAndCreateForm() {
     SpreadsheetApp.getActive().toast(
       "Form created successfully.",
       "Form Builder",
-      5
+      5,
     );
     ui.alert(
       "Success",
@@ -43,13 +46,13 @@ function confirmAndCreateForm() {
         "Responses (this file):\n" +
         result.responsesUrl +
         "\n",
-      ui.ButtonSet.OK
+      ui.ButtonSet.OK,
     );
   } catch (e) {
     SpreadsheetApp.getActive().toast(
       "Form creation failed.",
       "Form Builder",
-      5
+      5,
     );
     ui.alert("Error", e && e.message ? e.message : String(e), ui.ButtonSet.OK);
   }
@@ -77,7 +80,7 @@ function createFormFromActiveSpreadsheet() {
   }
   if (!cfg)
     throw new Error(
-      "Header row not found. Expected columns: Section, Question, Type, Points, AnswerA..D"
+      "Header row not found. Expected columns: Section, Question, Type, Points, AnswerA..D",
     );
 
   const {
@@ -100,8 +103,14 @@ function createFormFromActiveSpreadsheet() {
     "AnswerD",
   ]);
 
-  // Optional columns (ImageURL for question images)
-  const optIdx = optionalHeaderIndex(header, ["ImageURL"]);
+  // Optional columns (question image + answer image mode)
+  const optIdx = optionalHeaderIndex(header, [
+    "ImageURL",
+    "AnswerAImageURL",
+    "AnswerBImageURL",
+    "AnswerCImageURL",
+    "AnswerDImageURL",
+  ]);
 
   // Section totals for headers
   const sectionTotals = computeSectionTotals(values, headerRowIndex, idx);
@@ -149,34 +158,26 @@ function createFormFromActiveSpreadsheet() {
       (row[idx.AnswerC] || "").toString().trim(),
       (row[idx.AnswerD] || "").toString().trim(),
     ];
-
-    // Optional: insert image before the question
-    if (optIdx.ImageURL !== undefined) {
-      const imageUrl = (row[optIdx.ImageURL] || "").toString().trim();
-      if (imageUrl) {
-        try {
-          const blob = UrlFetchApp.fetch(imageUrl).getBlob();
-          form
-            .addImageItem()
-            .setTitle("Image for: " + question)
-            .setImage(blob);
-        } catch (imgErr) {
-          Logger.log("Image fetch failed row " + (r + 1) + ": " + imgErr);
-        }
-      }
-    }
+    const rawAnsImageUrls = [
+      getOptionalCell(row, optIdx.AnswerAImageURL),
+      getOptionalCell(row, optIdx.AnswerBImageURL),
+      getOptionalCell(row, optIdx.AnswerCImageURL),
+      getOptionalCell(row, optIdx.AnswerDImageURL),
+    ];
+    const hasAnswerImages = rawAnsImageUrls.some(Boolean);
+    const questionImageUrl = getOptionalCell(row, optIdx.ImageURL);
 
     if (!section)
       throw new Error(
-        `Missing "Section" in row ${r + 1} on sheet "${sh.getName()}"`
+        `Missing "Section" in row ${r + 1} on sheet "${sh.getName()}"`,
       );
     if (!type)
       throw new Error(
-        `Missing "Type" in row ${r + 1} on sheet "${sh.getName()}"`
+        `Missing "Type" in row ${r + 1} on sheet "${sh.getName()}"`,
       );
     if (!question)
       throw new Error(
-        `Missing "Question" in row ${r + 1} on sheet "${sh.getName()}"`
+        `Missing "Question" in row ${r + 1} on sheet "${sh.getName()}"`,
       );
 
     if (section !== currentSection) {
@@ -194,6 +195,9 @@ function createFormFromActiveSpreadsheet() {
       case "SA": {
         const item = form.addTextItem().setTitle(title).setRequired(true);
         safeSetPoints(item, pts);
+        if (questionImageUrl) {
+          addQuestionImageItem(form, question, questionImageUrl, r + 1);
+        }
         break;
       }
       case "PARA": {
@@ -202,11 +206,15 @@ function createFormFromActiveSpreadsheet() {
           .setTitle(title)
           .setRequired(true);
         safeSetPoints(item, pts);
+        if (questionImageUrl) {
+          addQuestionImageItem(form, question, questionImageUrl, r + 1);
+        }
         break;
       }
       case "MCQ": {
-        let choices = uniqueAnswers(rawAns).filter(Boolean);
-        if (choices.length < 2) {
+        const mcqData = buildAnswerEntries(rawAns, rawAnsImageUrls, "MCQ");
+        const entries = mcqData.entries;
+        if (entries.length < 2) {
           const item = form.addTextItem().setTitle(title).setRequired(true);
           safeSetPoints(item, pts);
           break;
@@ -215,49 +223,76 @@ function createFormFromActiveSpreadsheet() {
           .addMultipleChoiceItem()
           .setTitle(title)
           .setRequired(true);
-        let formChoices = choices.map((opt, i) =>
-          mcq.createChoice(stripStar(opt), i === 0)
+        let formChoices = entries.map((entry) =>
+          mcq.createChoice(
+            formatChoiceText(entry, hasAnswerImages),
+            entry.isCorrect,
+          ),
         );
         if (formChoices.length > 1) formChoices = shuffleArrayCopy(formChoices);
         mcq.setChoices(formChoices);
         safeSetPoints(mcq, pts);
+        if (questionImageUrl) {
+          addQuestionImageItem(form, question, questionImageUrl, r + 1);
+        }
+        if (hasAnswerImages) {
+          addAnswerImageItems(form, rawAns, rawAnsImageUrls, r + 1);
+        }
         break;
       }
       case "MSQ": {
-        const cleaned = uniqueAnswers(rawAns).filter(Boolean);
+        const msqData = buildAnswerEntries(rawAns, rawAnsImageUrls, "MSQ");
+        const cleaned = msqData.entries;
         if (cleaned.length < 2) {
           const item = form.addTextItem().setTitle(title).setRequired(true);
           safeSetPoints(item, pts);
           break;
         }
-        const starredChoices = cleaned.filter(isStarred);
-        if (starredChoices.length === 0) {
+        if (!msqData.hasExplicitCorrectChoices) {
           const mcq = form
             .addMultipleChoiceItem()
             .setTitle(title)
             .setRequired(true);
-          let choices = cleaned.map((opt, i) =>
-            mcq.createChoice(stripStar(opt), i === 0)
+          let choices = cleaned.map((entry) =>
+            mcq.createChoice(
+              formatChoiceText(entry, hasAnswerImages),
+              entry.isCorrect,
+            ),
           );
           if (choices.length > 1) choices = shuffleArrayCopy(choices);
           mcq.setChoices(choices);
           safeSetPoints(mcq, pts);
+          if (questionImageUrl) {
+            addQuestionImageItem(form, question, questionImageUrl, r + 1);
+          }
+          if (hasAnswerImages) {
+            addAnswerImageItems(form, rawAns, rawAnsImageUrls, r + 1);
+          }
           break;
         }
         const cb = form.addCheckboxItem().setTitle(title).setRequired(true);
-        let formChoices = cleaned.map((opt) =>
-          cb.createChoice(stripStar(opt), isStarred(opt))
+        let formChoices = cleaned.map((entry) =>
+          cb.createChoice(
+            formatChoiceText(entry, hasAnswerImages),
+            entry.isCorrect,
+          ),
         );
         formChoices = shuffleArrayCopy(formChoices);
         cb.setChoices(formChoices);
         safeSetPoints(cb, pts);
+        if (questionImageUrl) {
+          addQuestionImageItem(form, question, questionImageUrl, r + 1);
+        }
+        if (hasAnswerImages) {
+          addAnswerImageItems(form, rawAns, rawAnsImageUrls, r + 1);
+        }
         break;
       }
       default:
         throw new Error(
           `Unsupported Type "${type}" in row ${
             r + 1
-          }. Use SA, PARA, MCQ, or MSQ.`
+          }. Use SA, PARA, MCQ, or MSQ.`,
         );
     }
   }
@@ -432,11 +467,11 @@ function headerIndex(headerRow, requiredCols) {
   const idx = {};
   requiredCols.forEach((col) => {
     const i = headerRow.findIndex(
-      (h) => h.toString().trim().toLowerCase() === col.toLowerCase()
+      (h) => h.toString().trim().toLowerCase() === col.toLowerCase(),
     );
     if (i === -1)
       throw new Error(
-        `Header "${col}" not found. Got: ${headerRow.join(", ")}`
+        `Header "${col}" not found. Got: ${headerRow.join(", ")}`,
       );
     idx[col] = i;
   });
@@ -562,6 +597,125 @@ function optionalHeaderIndex(headerRow, cols) {
   return idx;
 }
 
+function getOptionalCell(row, index) {
+  if (index === undefined) return "";
+  return (row[index] || "").toString().trim();
+}
+
+function buildAnswerEntries(rawAns, rawAnsImageUrls, type) {
+  const entries = [];
+  const seen = new Set();
+
+  for (let i = 0; i < rawAns.length; i++) {
+    const raw = (rawAns[i] || "").toString().trim();
+    const imageUrl = (rawAnsImageUrls[i] || "").toString().trim();
+    if (!raw && !imageUrl) continue;
+
+    const label = String.fromCharCode(65 + i);
+    const text = stripStar(raw) || `Option ${label}`;
+    const dedupeKey = `${text.toLowerCase()}|${imageUrl}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    entries.push({
+      label,
+      text,
+      imageUrl,
+      isCorrect: type === "MSQ" ? isStarred(raw) : false,
+    });
+  }
+
+  if (entries.length === 0) {
+    return { entries, hasExplicitCorrectChoices: false };
+  }
+
+  if (type === "MCQ") {
+    entries.forEach((entry, index) => {
+      entry.isCorrect = index === 0;
+    });
+    return { entries, hasExplicitCorrectChoices: true };
+  }
+
+  const hasExplicitCorrectChoices = entries.some((entry) => entry.isCorrect);
+  if (!hasExplicitCorrectChoices) {
+    entries.forEach((entry, index) => {
+      entry.isCorrect = index === 0;
+    });
+  }
+  return { entries, hasExplicitCorrectChoices };
+}
+
+function formatChoiceText(entry, hasAnswerImages) {
+  if (!hasAnswerImages) return entry.text;
+  return `${entry.label}`;
+}
+
+function addAnswerImageItems(form, rawAns, rawAnsImageUrls, rowNumber) {
+  for (let i = 0; i < rawAnsImageUrls.length; i++) {
+    const imageUrl = (rawAnsImageUrls[i] || "").toString().trim();
+    if (!imageUrl) continue;
+
+    const label = String.fromCharCode(65 + i);
+    const answerText =
+      stripStar((rawAns[i] || "").toString().trim()) || `Option ${label}`;
+    try {
+      const blob = fetchImageBlobFromUrl(imageUrl);
+      form.addImageItem().setTitle(`${label}. ${answerText}`).setImage(blob);
+    } catch (imgErr) {
+      Logger.log(
+        `Answer image fetch failed row ${rowNumber}, ${label}: ${imgErr}`,
+      );
+    }
+  }
+}
+
+function addQuestionImageItem(form, question, imageUrl, rowNumber) {
+  try {
+    const blob = fetchImageBlobFromUrl(imageUrl);
+    form
+      .addImageItem()
+      .setTitle("Image for: " + question)
+      .setImage(blob);
+  } catch (imgErr) {
+    Logger.log(`Question image fetch failed row ${rowNumber}: ${imgErr}`);
+  }
+}
+
+function fetchImageBlobFromUrl(imageUrl) {
+  const normalized = (imageUrl || "").toString().trim();
+  if (!normalized) throw new Error("Empty image URL");
+
+  const driveFileId = extractDriveFileId(normalized);
+  if (driveFileId) {
+    return DriveApp.getFileById(driveFileId).getBlob();
+  }
+
+  const response = UrlFetchApp.fetch(normalized, {
+    followRedirects: true,
+    muteHttpExceptions: true,
+  });
+  const status = response.getResponseCode();
+  if (status >= 200 && status < 300) return response.getBlob();
+
+  throw new Error(`Image fetch failed with HTTP ${status}`);
+}
+
+function extractDriveFileId(url) {
+  const value = (url || "").toString();
+  const patterns = [
+    /drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/,
+    /drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/,
+    /drive\.google\.com\/uc\?.*id=([a-zA-Z0-9_-]+)/,
+    /docs\.google\.com\/uc\?.*id=([a-zA-Z0-9_-]+)/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = value.match(pattern);
+    if (match && match[1]) return match[1];
+  }
+  return "";
+}
+
 /***** GOOGLE CLASSROOM INTEGRATION *****/
 
 /** Store last form result so "Post Last Form to Classroom" can reuse it */
@@ -590,7 +744,7 @@ function confirmCreateAndPostToClassroom() {
     "Create Form & Post to Classroom",
     "Create a new Google Form quiz, link responses to this spreadsheet, " +
       "and then post it to Google Classroom?",
-    ui.ButtonSet.OK_CANCEL
+    ui.ButtonSet.OK_CANCEL,
   );
   if (res !== ui.Button.OK) return;
 
@@ -600,14 +754,14 @@ function confirmCreateAndPostToClassroom() {
     SpreadsheetApp.getActive().toast(
       "Form created. Opening Classroom dialog...",
       "Form Builder",
-      3
+      3,
     );
     showClassroomDialog();
   } catch (e) {
     SpreadsheetApp.getActive().toast(
       "Form creation failed.",
       "Form Builder",
-      5
+      5,
     );
     ui.alert("Error", e && e.message ? e.message : String(e), ui.ButtonSet.OK);
   }
@@ -622,7 +776,7 @@ function postLastFormToClassroom() {
       "No Form Found",
       "No form has been created yet from this spreadsheet.\n" +
         'Please use "Create Form (Confirm)" first.',
-      ui.ButtonSet.OK
+      ui.ButtonSet.OK,
     );
     return;
   }
@@ -730,13 +884,13 @@ function getClassroomDialogHtml() {
   const last = getLastFormResult();
   const escapedTitle = (last.formTitle || "Untitled Quiz").replace(
     /"/g,
-    "&quot;"
+    "&quot;",
   );
   const escapedUrl = last.publishedUrl || "(no URL)";
 
   return (
-    '<!DOCTYPE html>' +
-    "<html><head><base target=\"_top\">" +
+    "<!DOCTYPE html>" +
+    '<html><head><base target="_top">' +
     "<style>" +
     "body{font-family:Arial,sans-serif;padding:16px;margin:0;font-size:14px}" +
     "label{display:block;margin:10px 0 4px;font-weight:bold;font-size:13px}" +

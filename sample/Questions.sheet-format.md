@@ -25,12 +25,12 @@ Add a **blank row** after metadata, then the questions header.
 Create this header row exactly (order matters for A..D):
 
 ```
-Section | Question | Type | Points | AnswerA | AnswerB | AnswerC | AnswerD | ImageURL
+Section | Question | Type | Points | AnswerA | AnswerB | AnswerC | AnswerD | ImageURL | AnswerAImageURL | AnswerBImageURL | AnswerCImageURL | AnswerDImageURL
 ```
 
 - Header matching is **case-insensitive** but spelling must match.
 - Only `AnswerA..AnswerD` are parsed (max 4 options).
-- `ImageURL` is **optional** — omit the column entirely if you don't need images.
+- `ImageURL` and `Answer*ImageURL` columns are **optional** — omit them if not needed.
 
 ## 3) Question rows (one per row)
 
@@ -42,6 +42,7 @@ Section | Question | Type | Points | AnswerA | AnswerB | AnswerC | AnswerD | Ima
 | **Points**     |    ✅    | Integer points for the item. Non-numeric or blank → treated as **0**.                                                     |
 | **AnswerA..D** |    ✅    | Used for `MCQ`/`MSQ`. Leave blanks if not needed (e.g., for `SA`, `PARA`).                                                |
 | **ImageURL**   |    ❌    | Optional. A public URL to an image. If provided, an image is inserted before the question in the form.                    |
+| **AnswerAImageURL..AnswerDImageURL** | ❌ | Optional. For MCQ/MSQ, each URL displays an image item labeled A..D before the question. |
 
 ### Type-specific rules
 
@@ -76,7 +77,9 @@ Section | Question | Type | Points | AnswerA | AnswerB | AnswerC | AnswerD | Ima
 - For each question row, provide a **publicly accessible** image URL (e.g., from Google Drive with "Anyone with the link" sharing, or any public web URL).
 - The script will fetch the image and insert it as an **Image item** directly before the question in the form.
 - If the URL is invalid or unreachable, the image is skipped with a log warning (the question is still created).
-- **Note:** Images on individual answer choices are not supported by the Google Forms API. Only question-level images are supported.
+- To show images for answer options, add `AnswerAImageURL..AnswerDImageURL`.
+- In answer-image mode, the form displays labeled images (`A`, `B`, `C`, `D`) and the MCQ/MSQ choices are those labels.
+- **Note:** this is not embedded image-inside-choice rendering (a Forms API limitation); it is labeled image items plus selectable labels.
 
 ## 5) Answer handling
 
