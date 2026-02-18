@@ -13,6 +13,12 @@ function onOpen() {
     )
     .addSeparator()
     .addItem("Post Last Form to Classroom", "postLastFormToClassroom")
+    .addSeparator()
+    .addItem("Sync Draft Grades to Classroom", "syncDraftGradesToClassroom")
+    .addItem(
+      "Finalize & Return Grades to Classroom",
+      "finalizeAndReturnGradesToClassroom",
+    )
     .addToUi();
 }
 
@@ -797,6 +803,22 @@ function getLastFormResult() {
   };
 }
 
+function storeLastClassroomTarget(courseId, courseWorkId, title) {
+  const props = PropertiesService.getUserProperties();
+  props.setProperty("LAST_CLASSROOM_COURSE_ID", courseId || "");
+  props.setProperty("LAST_CLASSROOM_COURSEWORK_ID", courseWorkId || "");
+  props.setProperty("LAST_CLASSROOM_TITLE", title || "");
+}
+
+function getLastClassroomTarget() {
+  const props = PropertiesService.getUserProperties();
+  return {
+    courseId: props.getProperty("LAST_CLASSROOM_COURSE_ID") || "",
+    courseWorkId: props.getProperty("LAST_CLASSROOM_COURSEWORK_ID") || "",
+    title: props.getProperty("LAST_CLASSROOM_TITLE") || "",
+  };
+}
+
 /** Entrypoint: Create Form then immediately post to Classroom */
 function confirmCreateAndPostToClassroom() {
   const ui = SpreadsheetApp.getUi();
@@ -938,13 +960,251 @@ function submitToClassroom(options) {
       const minutes = Number.isNaN(parts[1]) ? 59 : parts[1];
       courseWork.dueTime = { hours: hours, minutes: minutes };
     }
-    Classroom.Courses.CourseWork.create(courseWork, courseId);
+    const createdCourseWork = Classroom.Courses.CourseWork.create(
+      courseWork,
+      courseId,
+    );
+    if (createdCourseWork && createdCourseWork.id) {
+      storeLastClassroomTarget(courseId, createdCourseWork.id, title);
+    }
   }
 
   return {
     success: true,
     message: 'Posted "' + title + '" to Google Classroom successfully.',
   };
+}
+
+function syncDraftGradesToClassroom() {
+  runClassroomGradeSync({ finalizeAndReturn: false });
+}
+
+function finalizeAndReturnGradesToClassroom() {
+  runClassroomGradeSync({ finalizeAndReturn: true });
+}
+
+function runClassroomGradeSync(options) {
+  const ui = SpreadsheetApp.getUi();
+  const finalizeAndReturn = !!(options && options.finalizeAndReturn);
+  const actionLabel = finalizeAndReturn
+    ? "Finalize & Return Grades"
+    : "Sync Draft Grades";
+
+  const target = getLastClassroomTarget();
+  if (!target.courseId || !target.courseWorkId) {
+    ui.alert(
+      actionLabel,
+      "No Classroom assignment target found.\nPost a form as a Classroom assignment first.",
+      ui.ButtonSet.OK,
+    );
+    return;
+  }
+
+  const confirmation = ui.alert(
+    actionLabel,
+    `Sync grades to Classroom for:\n${target.title || target.courseWorkId}?`,
+    ui.ButtonSet.OK_CANCEL,
+  );
+  if (confirmation !== ui.Button.OK) return;
+
+  try {
+    const scoreMap = getLatestResponseScoresByEmail();
+    if (Object.keys(scoreMap).length === 0) {
+      throw new Error(
+        "No scored responses found. Ensure the response sheet contains Email and Score columns.",
+      );
+    }
+
+    const studentEmailByUserId = getCourseStudentEmailMap(target.courseId);
+    const submissions = listAllStudentSubmissions(
+      target.courseId,
+      target.courseWorkId,
+    );
+
+    let patched = 0;
+    let returned = 0;
+    let skippedNoEmail = 0;
+    let skippedNoScore = 0;
+    let skippedState = 0;
+
+    submissions.forEach((submission) => {
+      const userId = submission.userId;
+      const email = (studentEmailByUserId[userId] || "").toLowerCase().trim();
+
+      if (!email) {
+        skippedNoEmail++;
+        return;
+      }
+
+      const score = scoreMap[email];
+      if (typeof score !== "number" || Number.isNaN(score)) {
+        skippedNoScore++;
+        return;
+      }
+
+      patchSubmissionGrade(
+        target.courseId,
+        target.courseWorkId,
+        submission.id,
+        score,
+        finalizeAndReturn,
+      );
+      patched++;
+
+      if (finalizeAndReturn) {
+        if (submission.state === "TURNED_IN") {
+          returnStudentSubmission(
+            target.courseId,
+            target.courseWorkId,
+            submission.id,
+          );
+          returned++;
+        } else if (submission.state !== "RETURNED") {
+          skippedState++;
+        }
+      }
+    });
+
+    ui.alert(
+      actionLabel,
+      `Done.\n\nPatched grades: ${patched}\nReturned submissions: ${returned}\nSkipped (no email mapping): ${skippedNoEmail}\nSkipped (no score): ${skippedNoScore}\nSkipped (state not TURNED_IN): ${skippedState}`,
+      ui.ButtonSet.OK,
+    );
+  } catch (error) {
+    ui.alert(
+      `${actionLabel} failed`,
+      error && error.message ? error.message : String(error),
+      ui.ButtonSet.OK,
+    );
+  }
+}
+
+function getLatestResponseScoresByEmail() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const candidateSheet = ss
+    .getSheets()
+    .find((sheet) => /^form responses/i.test(sheet.getName()));
+  if (!candidateSheet) {
+    throw new Error("Response sheet not found (expected tab starting with 'Form Responses').");
+  }
+
+  const values = candidateSheet.getDataRange().getDisplayValues();
+  if (!values || values.length < 2) {
+    throw new Error("Response sheet has no data rows.");
+  }
+
+  const header = values[0].map((value) => String(value || "").trim());
+  const emailIndex = header.findIndex((name) => /email/i.test(name));
+  const scoreIndex = header.findIndex((name) => /score/i.test(name));
+
+  if (emailIndex === -1 || scoreIndex === -1) {
+    throw new Error(
+      "Response sheet must include Email and Score columns. Open the linked quiz form and ensure scoring is enabled.",
+    );
+  }
+
+  const byEmail = {};
+  for (let rowIndex = 1; rowIndex < values.length; rowIndex++) {
+    const row = values[rowIndex];
+    const email = String(row[emailIndex] || "").toLowerCase().trim();
+    if (!email) continue;
+
+    const parsedScore = parseScoreCell(row[scoreIndex]);
+    if (parsedScore == null) continue;
+    byEmail[email] = parsedScore;
+  }
+
+  return byEmail;
+}
+
+function parseScoreCell(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+
+  const slashMatch = text.match(/^(-?\d+(?:\.\d+)?)\s*\//);
+  if (slashMatch) return Number(slashMatch[1]);
+
+  const numeric = Number(text);
+  if (Number.isNaN(numeric)) return null;
+  return numeric;
+}
+
+function getCourseStudentEmailMap(courseId) {
+  const emailByUserId = {};
+  let pageToken = null;
+
+  do {
+    const response = Classroom.Courses.Students.list(courseId, {
+      pageToken: pageToken,
+      pageSize: 100,
+    });
+    const students = response.students || [];
+    students.forEach((student) => {
+      const userId = String(student.userId || "");
+      const email = String(
+        (student.profile && student.profile.emailAddress) || "",
+      )
+        .toLowerCase()
+        .trim();
+      if (userId && email) emailByUserId[userId] = email;
+    });
+    pageToken = response.nextPageToken || null;
+  } while (pageToken);
+
+  return emailByUserId;
+}
+
+function listAllStudentSubmissions(courseId, courseWorkId) {
+  const submissions = [];
+  let pageToken = null;
+
+  do {
+    const response = Classroom.Courses.CourseWork.StudentSubmissions.list(
+      courseId,
+      courseWorkId,
+      {
+        pageToken: pageToken,
+        pageSize: 100,
+      },
+    );
+    const items = response.studentSubmissions || [];
+    items.forEach((submission) => submissions.push(submission));
+    pageToken = response.nextPageToken || null;
+  } while (pageToken);
+
+  return submissions;
+}
+
+function patchSubmissionGrade(
+  courseId,
+  courseWorkId,
+  submissionId,
+  score,
+  setAssigned,
+) {
+  const payload = { draftGrade: score };
+  let updateMask = "draftGrade";
+  if (setAssigned) {
+    payload.assignedGrade = score;
+    updateMask = "draftGrade,assignedGrade";
+  }
+
+  Classroom.Courses.CourseWork.StudentSubmissions.patch(
+    payload,
+    courseId,
+    courseWorkId,
+    submissionId,
+    { updateMask: updateMask },
+  );
+}
+
+function returnStudentSubmission(courseId, courseWorkId, submissionId) {
+  Classroom.Courses.CourseWork.StudentSubmissions["return"](
+    {},
+    courseId,
+    courseWorkId,
+    submissionId,
+  );
 }
 
 /** Build the HTML for the Classroom dialog */
