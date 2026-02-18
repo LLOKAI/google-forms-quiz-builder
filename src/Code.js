@@ -685,9 +685,13 @@ function fetchImageBlobFromUrl(imageUrl) {
   const normalized = (imageUrl || "").toString().trim();
   if (!normalized) throw new Error("Empty image URL");
 
+  validateImageUrl(normalized);
+
   const driveFileId = extractDriveFileId(normalized);
   if (driveFileId) {
-    return DriveApp.getFileById(driveFileId).getBlob();
+    const driveBlob = DriveApp.getFileById(driveFileId).getBlob();
+    validateImageBlob(driveBlob);
+    return driveBlob;
   }
 
   const response = UrlFetchApp.fetch(normalized, {
@@ -695,9 +699,65 @@ function fetchImageBlobFromUrl(imageUrl) {
     muteHttpExceptions: true,
   });
   const status = response.getResponseCode();
-  if (status >= 200 && status < 300) return response.getBlob();
+  if (status < 200 || status >= 300) {
+    throw new Error(`Image fetch failed with HTTP ${status}`);
+  }
 
-  throw new Error(`Image fetch failed with HTTP ${status}`);
+  const headers = response.getHeaders() || {};
+  const contentType =
+    headers["Content-Type"] || headers["content-type"] || "";
+  if (!/^image\//i.test(String(contentType))) {
+    throw new Error(`URL did not return an image content type: ${contentType}`);
+  }
+
+  const blob = response.getBlob();
+  validateImageBlob(blob);
+  return blob;
+}
+
+function validateImageUrl(url) {
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error("Image URL must start with http:// or https://");
+  }
+
+  const hostMatch = String(url).match(/^https?:\/\/([^\/\?#:]+)/i);
+  const host = hostMatch && hostMatch[1] ? hostMatch[1].toLowerCase() : "";
+  if (!host) throw new Error("Invalid image URL host");
+
+  if (host === "localhost" || host === "127.0.0.1") {
+    throw new Error("Localhost image URLs are not allowed");
+  }
+
+  if (
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+  ) {
+    throw new Error("Private network image URLs are not allowed");
+  }
+}
+
+function validateImageBlob(blob) {
+  const contentType = blob.getContentType() || "";
+  if (!/^image\//i.test(contentType)) {
+    throw new Error(`Blob is not an image (content type: ${contentType})`);
+  }
+
+  const maxImageBytes = 5 * 1024 * 1024;
+  const bytes = blob.getBytes();
+  if (bytes.length > maxImageBytes) {
+    throw new Error("Image too large (max 5MB)");
+  }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function extractDriveFileId(url) {
@@ -720,7 +780,7 @@ function extractDriveFileId(url) {
 
 /** Store last form result so "Post Last Form to Classroom" can reuse it */
 function storeLastFormResult(result) {
-  const props = PropertiesService.getDocumentProperties();
+  const props = PropertiesService.getUserProperties();
   props.setProperty("LAST_FORM_PUBLISHED_URL", result.publishedUrl || "");
   props.setProperty("LAST_FORM_EDIT_URL", result.editUrl || "");
   props.setProperty("LAST_FORM_TITLE", result.formTitle || "Untitled Quiz");
@@ -728,7 +788,7 @@ function storeLastFormResult(result) {
 }
 
 function getLastFormResult() {
-  const props = PropertiesService.getDocumentProperties();
+  const props = PropertiesService.getUserProperties();
   return {
     publishedUrl: props.getProperty("LAST_FORM_PUBLISHED_URL") || "",
     editUrl: props.getProperty("LAST_FORM_EDIT_URL") || "",
@@ -834,7 +894,8 @@ function submitToClassroom(options) {
   const postType = options.postType || "assignment";
   const title = options.title || last.formTitle || "Untitled Quiz";
   const description = options.description || "";
-  const maxPoints = Number(options.maxPoints) || 100;
+  let maxPoints = Number(options.maxPoints);
+  if (Number.isNaN(maxPoints) || maxPoints < 0) maxPoints = 100;
   const dueDate = options.dueDate || "";
   const dueTime = options.dueTime || "23:59";
   const topicId = options.topicId || "";
@@ -860,16 +921,23 @@ function submitToClassroom(options) {
       maxPoints: maxPoints,
     };
     if (dueDate) {
-      const d = new Date(dueDate);
+      const [yearStr, monthStr, dayStr] = dueDate.split("-");
+      const year = Number(yearStr);
+      const month = Number(monthStr);
+      const day = Number(dayStr);
+      if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) {
+        throw new Error("Invalid due date format. Expected YYYY-MM-DD.");
+      }
       courseWork.dueDate = {
-        year: d.getFullYear(),
-        month: d.getMonth() + 1,
-        day: d.getDate(),
+        year: year,
+        month: month,
+        day: day,
       };
       const parts = dueTime.split(":").map(Number);
-      courseWork.dueTime = { hours: parts[0] || 23, minutes: parts[1] || 59 };
+      const hours = Number.isNaN(parts[0]) ? 23 : parts[0];
+      const minutes = Number.isNaN(parts[1]) ? 59 : parts[1];
+      courseWork.dueTime = { hours: hours, minutes: minutes };
     }
-    if (topicId) courseWork.topicId = topicId;
     Classroom.Courses.CourseWork.create(courseWork, courseId);
   }
 
@@ -882,12 +950,8 @@ function submitToClassroom(options) {
 /** Build the HTML for the Classroom dialog */
 function getClassroomDialogHtml() {
   const last = getLastFormResult();
-  const escapedTitle = (last.formTitle || "Untitled Quiz").replace(
-    /"/g,
-    "&quot;",
-  );
-  const escapedUrl = last.publishedUrl || "(no URL)";
-
+  const escapedTitle = escapeHtml(last.formTitle || "Untitled Quiz");
+  const escapedUrl = escapeHtml(last.publishedUrl || "(no URL)");
   return (
     "<!DOCTYPE html>" +
     '<html><head><base target="_top">' +
