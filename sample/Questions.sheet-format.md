@@ -41,8 +41,8 @@ Section | Question | Type | Points | AnswerA | AnswerB | AnswerC | AnswerD | Ima
 | **Type**       |    ✅    | One of: `SA` (short answer), `PARA` (paragraph), `MCQ` (single choice), `MSQ` (checkboxes). Matching is case-insensitive. |
 | **Points**     |    ✅    | Integer points for the item. Non-numeric or blank → treated as **0**.                                                     |
 | **AnswerA..D** |    ✅    | Used for `MCQ`/`MSQ`. Leave blanks if not needed (e.g., for `SA`, `PARA`).                                                |
-| **ImageURL**   |    ❌    | Optional. A public URL to an image. If provided, an image is inserted before the question in the form.                    |
-| **AnswerAImageURL..AnswerDImageURL** | ❌ | Optional. For MCQ/MSQ, each URL displays an image item labeled A..D before the question. |
+| **ImageURL**   |    ❌    | Optional. A public URL to an image. If provided, an image item is inserted after the question (and any choices) in the form. |
+| **AnswerAImageURL..AnswerDImageURL** | ❌ | Optional. For MCQ/MSQ, each URL displays an image item labeled A..D after the question and its choices, keeping it tied to that row/section. |
 
 ### Type-specific rules
 
@@ -75,7 +75,7 @@ Section | Question | Type | Points | AnswerA | AnswerB | AnswerC | AnswerD | Ima
 
 - Add an `ImageURL` column header after `AnswerD`.
 - For each question row, provide a **publicly accessible** image URL (e.g., from Google Drive with "Anyone with the link" sharing, or any public web URL).
-- The script will fetch the image and insert it as an **Image item** directly before the question in the form.
+- The script will fetch the image and insert it as an **Image item** placed below the question (and any choices) in the form.
 - If the URL is invalid or unreachable, the image is skipped with a log warning (the question is still created).
 - To show images for answer options, add `AnswerAImageURL..AnswerDImageURL`.
 - In answer-image mode, the form displays labeled images (`A`, `B`, `C`, `D`) and the MCQ/MSQ choices are those labels.
