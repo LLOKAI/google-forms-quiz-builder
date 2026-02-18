@@ -695,7 +695,7 @@ function fetchImageBlobFromUrl(imageUrl) {
   }
 
   const response = UrlFetchApp.fetch(normalized, {
-    followRedirects: true,
+    followRedirects: false,
     muteHttpExceptions: true,
   });
   const status = response.getResponseCode();
@@ -720,11 +720,29 @@ function validateImageUrl(url) {
     throw new Error("Image URL must start with http:// or https://");
   }
 
-  const hostMatch = String(url).match(/^https?:\/\/([^\/\?#:]+)/i);
-  const host = hostMatch && hostMatch[1] ? hostMatch[1].toLowerCase() : "";
-  if (!host) throw new Error("Invalid image URL host");
+  let host = "";
+  try {
+    // Prefer a real URL parser to correctly handle userinfo, ports, and IPv6.
+    const parsed = new URL(String(url));
+    host = (parsed.hostname || "").toLowerCase();
+  } catch (e) {
+    // Fallback: handle optional userinfo and bracketed IPv6 literals.
+    const hostMatch = String(url).match(
+      /^https?:\/\/(?:[^@\/\?#]*@)?(\[[^\]]+\]|[^\/\?#:]+)/i,
+    );
+    host = hostMatch && hostMatch[1] ? hostMatch[1].toLowerCase() : "";
+  }
 
-  if (host === "localhost" || host === "127.0.0.1") {
+  // Strip brackets from IPv6 literals (e.g., "[::1]" -> "::1").
+  if (host.startsWith("[") && host.endsWith("]")) {
+    host = host.slice(1, -1);
+  }
+
+  if (!host) {
+    throw new Error("Invalid image URL host");
+  }
+
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
     throw new Error("Localhost image URLs are not allowed");
   }
 
@@ -920,6 +938,7 @@ function submitToClassroom(options) {
       materials: [{ link: { url: last.publishedUrl } }],
       maxPoints: maxPoints,
     };
+    if (topicId) courseWork.topicId = topicId;
     if (dueDate) {
       const [yearStr, monthStr, dayStr] = dueDate.split("-");
       const year = Number(yearStr);
