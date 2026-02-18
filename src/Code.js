@@ -7,6 +7,9 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("Form Builder")
     .addItem("Create Form (Confirm)", "confirmAndCreateForm")
+    .addItem("Create Form & Post to Classroom", "confirmCreateAndPostToClassroom")
+    .addSeparator()
+    .addItem("Post Last Form to Classroom", "postLastFormToClassroom")
     .addToUi();
 }
 
@@ -22,6 +25,7 @@ function confirmAndCreateForm() {
 
   try {
     const result = createFormFromActiveSpreadsheet();
+    storeLastFormResult(result);
     SpreadsheetApp.getActive().toast(
       "Form created successfully.",
       "Form Builder",
@@ -96,6 +100,9 @@ function createFormFromActiveSpreadsheet() {
     "AnswerD",
   ]);
 
+  // Optional columns (ImageURL for question images)
+  const optIdx = optionalHeaderIndex(header, ["ImageURL"]);
+
   // Section totals for headers
   const sectionTotals = computeSectionTotals(values, headerRowIndex, idx);
 
@@ -142,6 +149,22 @@ function createFormFromActiveSpreadsheet() {
       (row[idx.AnswerC] || "").toString().trim(),
       (row[idx.AnswerD] || "").toString().trim(),
     ];
+
+    // Optional: insert image before the question
+    if (optIdx.ImageURL !== undefined) {
+      const imageUrl = (row[optIdx.ImageURL] || "").toString().trim();
+      if (imageUrl) {
+        try {
+          const blob = UrlFetchApp.fetch(imageUrl).getBlob();
+          form
+            .addImageItem()
+            .setTitle("Image for: " + question)
+            .setImage(blob);
+        } catch (imgErr) {
+          Logger.log("Image fetch failed row " + (r + 1) + ": " + imgErr);
+        }
+      }
+    }
 
     if (!section)
       throw new Error(
@@ -262,6 +285,8 @@ function createFormFromActiveSpreadsheet() {
   }
 
   return {
+    formId: formId,
+    formTitle: formTitle,
     publishedUrl: urls.publishedUrl, // use this with students
     editUrl: urls.editUrl,
     responsesUrl: ss.getUrl(),
@@ -523,4 +548,331 @@ function parentsToIds(parents) {
   return typeof parents[0] === "string"
     ? parents.slice()
     : parents.map((p) => p.id);
+}
+
+/***** OPTIONAL COLUMN HELPER *****/
+function optionalHeaderIndex(headerRow, cols) {
+  const idx = {};
+  cols.forEach(function (col) {
+    const i = headerRow.findIndex(function (h) {
+      return h.toString().trim().toLowerCase() === col.toLowerCase();
+    });
+    if (i !== -1) idx[col] = i;
+  });
+  return idx;
+}
+
+/***** GOOGLE CLASSROOM INTEGRATION *****/
+
+/** Store last form result so "Post Last Form to Classroom" can reuse it */
+function storeLastFormResult(result) {
+  const props = PropertiesService.getDocumentProperties();
+  props.setProperty("LAST_FORM_PUBLISHED_URL", result.publishedUrl || "");
+  props.setProperty("LAST_FORM_EDIT_URL", result.editUrl || "");
+  props.setProperty("LAST_FORM_TITLE", result.formTitle || "Untitled Quiz");
+  props.setProperty("LAST_FORM_ID", result.formId || "");
+}
+
+function getLastFormResult() {
+  const props = PropertiesService.getDocumentProperties();
+  return {
+    publishedUrl: props.getProperty("LAST_FORM_PUBLISHED_URL") || "",
+    editUrl: props.getProperty("LAST_FORM_EDIT_URL") || "",
+    formTitle: props.getProperty("LAST_FORM_TITLE") || "",
+    formId: props.getProperty("LAST_FORM_ID") || "",
+  };
+}
+
+/** Entrypoint: Create Form then immediately post to Classroom */
+function confirmCreateAndPostToClassroom() {
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.alert(
+    "Create Form & Post to Classroom",
+    "Create a new Google Form quiz, link responses to this spreadsheet, " +
+      "and then post it to Google Classroom?",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (res !== ui.Button.OK) return;
+
+  try {
+    const result = createFormFromActiveSpreadsheet();
+    storeLastFormResult(result);
+    SpreadsheetApp.getActive().toast(
+      "Form created. Opening Classroom dialog...",
+      "Form Builder",
+      3
+    );
+    showClassroomDialog();
+  } catch (e) {
+    SpreadsheetApp.getActive().toast(
+      "Form creation failed.",
+      "Form Builder",
+      5
+    );
+    ui.alert("Error", e && e.message ? e.message : String(e), ui.ButtonSet.OK);
+  }
+}
+
+/** Entrypoint: Post last created form to Classroom */
+function postLastFormToClassroom() {
+  const ui = SpreadsheetApp.getUi();
+  const last = getLastFormResult();
+  if (!last.publishedUrl) {
+    ui.alert(
+      "No Form Found",
+      "No form has been created yet from this spreadsheet.\n" +
+        'Please use "Create Form (Confirm)" first.',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+  showClassroomDialog();
+}
+
+/** Show the Classroom course picker modal dialog */
+function showClassroomDialog() {
+  const html = HtmlService.createHtmlOutput(getClassroomDialogHtml())
+    .setWidth(480)
+    .setHeight(560)
+    .setTitle("Post to Google Classroom");
+  SpreadsheetApp.getUi().showModalDialog(html, "Post to Google Classroom");
+}
+
+/** Fetch active courses where current user is a teacher (called from dialog) */
+function getActiveCourses() {
+  const courses = [];
+  let pageToken = null;
+  do {
+    const params = { teacherId: "me", courseStates: ["ACTIVE"] };
+    if (pageToken) params.pageToken = pageToken;
+    const response = Classroom.Courses.list(params);
+    if (response.courses) {
+      response.courses.forEach(function (c) {
+        courses.push({ id: c.id, name: c.name, section: c.section || "" });
+      });
+    }
+    pageToken = response.nextPageToken;
+  } while (pageToken);
+  return courses;
+}
+
+/** Fetch topics for a course (called from dialog) */
+function getTopicsForCourse(courseId) {
+  try {
+    const response = Classroom.Courses.Topics.list(courseId);
+    return (response.topic || []).map(function (t) {
+      return { id: t.topicId, name: t.name };
+    });
+  } catch (e) {
+    Logger.log("getTopicsForCourse: " + e);
+    return [];
+  }
+}
+
+/** Post the form to Google Classroom (called from dialog) */
+function submitToClassroom(options) {
+  const last = getLastFormResult();
+  if (!last.publishedUrl)
+    throw new Error("No form URL found. Create a form first.");
+
+  const courseId = options.courseId;
+  if (!courseId) throw new Error("No course selected.");
+  const postType = options.postType || "assignment";
+  const title = options.title || last.formTitle || "Untitled Quiz";
+  const description = options.description || "";
+  const maxPoints = Number(options.maxPoints) || 100;
+  const dueDate = options.dueDate || "";
+  const dueTime = options.dueTime || "23:59";
+  const topicId = options.topicId || "";
+
+  if (postType === "material") {
+    // Post as class material (ungraded)
+    const material = {
+      title: title,
+      description: description,
+      state: "PUBLISHED",
+      materials: [{ link: { url: last.publishedUrl } }],
+    };
+    if (topicId) material.topicId = topicId;
+    Classroom.Courses.CourseWorkMaterials.create(material, courseId);
+  } else {
+    // Post as quiz assignment (graded)
+    const courseWork = {
+      title: title,
+      description: description,
+      workType: "ASSIGNMENT",
+      state: "PUBLISHED",
+      materials: [{ link: { url: last.publishedUrl } }],
+      maxPoints: maxPoints,
+    };
+    if (dueDate) {
+      const d = new Date(dueDate);
+      courseWork.dueDate = {
+        year: d.getFullYear(),
+        month: d.getMonth() + 1,
+        day: d.getDate(),
+      };
+      const parts = dueTime.split(":").map(Number);
+      courseWork.dueTime = { hours: parts[0] || 23, minutes: parts[1] || 59 };
+    }
+    if (topicId) courseWork.topicId = topicId;
+    Classroom.Courses.CourseWork.create(courseWork, courseId);
+  }
+
+  return {
+    success: true,
+    message: 'Posted "' + title + '" to Google Classroom successfully.',
+  };
+}
+
+/** Build the HTML for the Classroom dialog */
+function getClassroomDialogHtml() {
+  const last = getLastFormResult();
+  const escapedTitle = (last.formTitle || "Untitled Quiz").replace(
+    /"/g,
+    "&quot;"
+  );
+  const escapedUrl = last.publishedUrl || "(no URL)";
+
+  return (
+    '<!DOCTYPE html>' +
+    "<html><head><base target=\"_top\">" +
+    "<style>" +
+    "body{font-family:Arial,sans-serif;padding:16px;margin:0;font-size:14px}" +
+    "label{display:block;margin:10px 0 4px;font-weight:bold;font-size:13px}" +
+    "select,input{width:100%;padding:7px;box-sizing:border-box;border:1px solid #dadce0;border-radius:4px;font-size:13px}" +
+    ".row{margin-bottom:4px}" +
+    ".actions{margin-top:16px;text-align:right}" +
+    "button{padding:8px 20px;margin-left:8px;cursor:pointer;font-size:13px}" +
+    ".primary{background:#1a73e8;color:#fff;border:none;border-radius:4px}" +
+    ".primary:hover{background:#1557b0}" +
+    ".secondary{background:#f1f3f4;border:1px solid #dadce0;border-radius:4px}" +
+    "#status{margin-top:12px;padding:8px;border-radius:4px;display:none}" +
+    ".success{background:#e6f4ea;color:#137333}" +
+    ".error{background:#fce8e6;color:#c5221f}" +
+    ".info{background:#e8f0fe;color:#1967d2}" +
+    ".form-url{font-size:12px;color:#666;word-break:break-all;margin-bottom:8px;padding:8px;background:#f8f9fa;border-radius:4px}" +
+    "</style>" +
+    "</head><body>" +
+    '<div class="form-url"><strong>Form:</strong> ' +
+    escapedTitle +
+    "<br>" +
+    escapedUrl +
+    "</div>" +
+    '<div id="loading" class="info" style="display:block;padding:8px;border-radius:4px">Loading courses...</div>' +
+    '<div id="formArea" style="display:none">' +
+    '<div class="row">' +
+    '<label for="course">Course</label>' +
+    '<select id="course" onchange="loadTopics()"><option value="">-- Select a course --</option></select>' +
+    "</div>" +
+    '<div class="row">' +
+    '<label for="postType">Post As</label>' +
+    '<select id="postType" onchange="toggleFields()">' +
+    '<option value="assignment">Quiz Assignment (graded)</option>' +
+    '<option value="material">Class Material (ungraded)</option>' +
+    "</select>" +
+    "</div>" +
+    '<div class="row">' +
+    '<label for="title">Title</label>' +
+    '<input type="text" id="title" value="' +
+    escapedTitle +
+    '">' +
+    "</div>" +
+    '<div class="row">' +
+    '<label for="description">Description (optional)</label>' +
+    '<input type="text" id="description" placeholder="Instructions for students...">' +
+    "</div>" +
+    '<div id="assignmentFields">' +
+    '<div class="row">' +
+    '<label for="maxPoints">Max Points</label>' +
+    '<input type="number" id="maxPoints" value="100" min="0">' +
+    "</div>" +
+    '<div class="row">' +
+    '<label for="dueDate">Due Date (optional)</label>' +
+    '<input type="date" id="dueDate">' +
+    "</div>" +
+    '<div class="row">' +
+    '<label for="dueTime">Due Time</label>' +
+    '<input type="time" id="dueTime" value="23:59">' +
+    "</div>" +
+    "</div>" +
+    '<div class="row">' +
+    '<label for="topic">Topic (optional)</label>' +
+    '<select id="topic"><option value="">-- None --</option></select>' +
+    "</div>" +
+    '<div class="actions">' +
+    '<button class="secondary" onclick="google.script.host.close()">Cancel</button>' +
+    '<button class="primary" id="submitBtn" onclick="submit()">Post to Classroom</button>' +
+    "</div>" +
+    "</div>" +
+    '<div id="status"></div>' +
+    "<script>" +
+    "function init(){" +
+    "google.script.run.withSuccessHandler(function(courses){" +
+    "var sel=document.getElementById('course');" +
+    "courses.forEach(function(c){" +
+    "var o=document.createElement('option');" +
+    "o.value=c.id;" +
+    "o.textContent=c.name+(c.section?' - '+c.section:'');" +
+    "sel.appendChild(o);" +
+    "});" +
+    "document.getElementById('loading').style.display='none';" +
+    "document.getElementById('formArea').style.display='block';" +
+    "}).withFailureHandler(function(e){" +
+    "showStatus('Failed to load courses: '+e.message,'error');" +
+    "document.getElementById('loading').style.display='none';" +
+    "}).getActiveCourses();" +
+    "}" +
+    "function loadTopics(){" +
+    "var courseId=document.getElementById('course').value;" +
+    "var sel=document.getElementById('topic');" +
+    "sel.innerHTML='<option value=\"\">-- None --</option>';" +
+    "if(!courseId)return;" +
+    "google.script.run.withSuccessHandler(function(topics){" +
+    "topics.forEach(function(t){" +
+    "var o=document.createElement('option');" +
+    "o.value=t.id;" +
+    "o.textContent=t.name;" +
+    "sel.appendChild(o);" +
+    "});" +
+    "}).getTopicsForCourse(courseId);" +
+    "}" +
+    "function toggleFields(){" +
+    "var t=document.getElementById('postType').value;" +
+    "document.getElementById('assignmentFields').style.display=(t==='assignment')?'block':'none';" +
+    "}" +
+    "function submit(){" +
+    "var courseId=document.getElementById('course').value;" +
+    "if(!courseId){showStatus('Please select a course.','error');return;}" +
+    "var opts={" +
+    "courseId:courseId," +
+    "postType:document.getElementById('postType').value," +
+    "title:document.getElementById('title').value," +
+    "description:document.getElementById('description').value," +
+    "maxPoints:document.getElementById('maxPoints').value," +
+    "dueDate:document.getElementById('dueDate').value," +
+    "dueTime:document.getElementById('dueTime').value," +
+    "topicId:document.getElementById('topic').value" +
+    "};" +
+    "document.getElementById('submitBtn').disabled=true;" +
+    "document.getElementById('submitBtn').textContent='Posting...';" +
+    "showStatus('Posting to Classroom...','info');" +
+    "google.script.run.withSuccessHandler(function(r){" +
+    "showStatus(r.message,'success');" +
+    "document.getElementById('submitBtn').textContent='Done!';" +
+    "setTimeout(function(){google.script.host.close();},2500);" +
+    "}).withFailureHandler(function(e){" +
+    "showStatus('Error: '+e.message,'error');" +
+    "document.getElementById('submitBtn').disabled=false;" +
+    "document.getElementById('submitBtn').textContent='Post to Classroom';" +
+    "}).submitToClassroom(opts);" +
+    "}" +
+    "function showStatus(msg,type){" +
+    "var s=document.getElementById('status');" +
+    "s.textContent=msg;s.className=type;s.style.display='block';" +
+    "}" +
+    "init();" +
+    "</script>" +
+    "</body></html>"
+  );
 }
