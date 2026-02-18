@@ -1,5 +1,5 @@
 /***** CONFIG *****/
-const TEMPLATE_FORM_ID = "1kANsPRys7UKT9G9AKmeDeuBqZkgb984-gqIUruYTLpg"; // '' to disable
+const TEMPLATE_FORM_ID = ""; // '' to disable
 const MAKE_PUBLIC_ANYONE_WITH_LINK = true; // set false if you only want your domain/responders list
 
 /***** MENU *****/
@@ -7,7 +7,10 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("Form Builder")
     .addItem("Create Form (Confirm)", "confirmAndCreateForm")
-    .addItem("Create Form & Post to Classroom", "confirmCreateAndPostToClassroom")
+    .addItem(
+      "Create Form & Post to Classroom",
+      "confirmCreateAndPostToClassroom",
+    )
     .addSeparator()
     .addItem("Post Last Form to Classroom", "postLastFormToClassroom")
     .addToUi();
@@ -19,7 +22,7 @@ function confirmAndCreateForm() {
   const res = ui.alert(
     "Create Form",
     "Create a new Google Form quiz and link responses to this spreadsheet (new tab)?",
-    ui.ButtonSet.OK_CANCEL
+    ui.ButtonSet.OK_CANCEL,
   );
   if (res !== ui.Button.OK) return;
 
@@ -29,7 +32,7 @@ function confirmAndCreateForm() {
     SpreadsheetApp.getActive().toast(
       "Form created successfully.",
       "Form Builder",
-      5
+      5,
     );
     ui.alert(
       "Success",
@@ -43,13 +46,13 @@ function confirmAndCreateForm() {
         "Responses (this file):\n" +
         result.responsesUrl +
         "\n",
-      ui.ButtonSet.OK
+      ui.ButtonSet.OK,
     );
   } catch (e) {
     SpreadsheetApp.getActive().toast(
       "Form creation failed.",
       "Form Builder",
-      5
+      5,
     );
     ui.alert("Error", e && e.message ? e.message : String(e), ui.ButtonSet.OK);
   }
@@ -77,7 +80,7 @@ function createFormFromActiveSpreadsheet() {
   }
   if (!cfg)
     throw new Error(
-      "Header row not found. Expected columns: Section, Question, Type, Points, AnswerA..D"
+      "Header row not found. Expected columns: Section, Question, Type, Points, AnswerA..D",
     );
 
   const {
@@ -100,8 +103,14 @@ function createFormFromActiveSpreadsheet() {
     "AnswerD",
   ]);
 
-  // Optional columns (ImageURL for question images)
-  const optIdx = optionalHeaderIndex(header, ["ImageURL"]);
+  // Optional columns (question image + answer image mode)
+  const optIdx = optionalHeaderIndex(header, [
+    "ImageURL",
+    "AnswerAImageURL",
+    "AnswerBImageURL",
+    "AnswerCImageURL",
+    "AnswerDImageURL",
+  ]);
 
   // Section totals for headers
   const sectionTotals = computeSectionTotals(values, headerRowIndex, idx);
@@ -149,34 +158,26 @@ function createFormFromActiveSpreadsheet() {
       (row[idx.AnswerC] || "").toString().trim(),
       (row[idx.AnswerD] || "").toString().trim(),
     ];
-
-    // Optional: insert image before the question
-    if (optIdx.ImageURL !== undefined) {
-      const imageUrl = (row[optIdx.ImageURL] || "").toString().trim();
-      if (imageUrl) {
-        try {
-          const blob = UrlFetchApp.fetch(imageUrl).getBlob();
-          form
-            .addImageItem()
-            .setTitle("Image for: " + question)
-            .setImage(blob);
-        } catch (imgErr) {
-          Logger.log("Image fetch failed row " + (r + 1) + ": " + imgErr);
-        }
-      }
-    }
+    const rawAnsImageUrls = [
+      getOptionalCell(row, optIdx.AnswerAImageURL),
+      getOptionalCell(row, optIdx.AnswerBImageURL),
+      getOptionalCell(row, optIdx.AnswerCImageURL),
+      getOptionalCell(row, optIdx.AnswerDImageURL),
+    ];
+    const hasAnswerImages = rawAnsImageUrls.some(Boolean);
+    const questionImageUrl = getOptionalCell(row, optIdx.ImageURL);
 
     if (!section)
       throw new Error(
-        `Missing "Section" in row ${r + 1} on sheet "${sh.getName()}"`
+        `Missing "Section" in row ${r + 1} on sheet "${sh.getName()}"`,
       );
     if (!type)
       throw new Error(
-        `Missing "Type" in row ${r + 1} on sheet "${sh.getName()}"`
+        `Missing "Type" in row ${r + 1} on sheet "${sh.getName()}"`,
       );
     if (!question)
       throw new Error(
-        `Missing "Question" in row ${r + 1} on sheet "${sh.getName()}"`
+        `Missing "Question" in row ${r + 1} on sheet "${sh.getName()}"`,
       );
 
     if (section !== currentSection) {
@@ -194,6 +195,9 @@ function createFormFromActiveSpreadsheet() {
       case "SA": {
         const item = form.addTextItem().setTitle(title).setRequired(true);
         safeSetPoints(item, pts);
+        if (questionImageUrl) {
+          addQuestionImageItem(form, question, questionImageUrl, r + 1);
+        }
         break;
       }
       case "PARA": {
@@ -202,11 +206,15 @@ function createFormFromActiveSpreadsheet() {
           .setTitle(title)
           .setRequired(true);
         safeSetPoints(item, pts);
+        if (questionImageUrl) {
+          addQuestionImageItem(form, question, questionImageUrl, r + 1);
+        }
         break;
       }
       case "MCQ": {
-        let choices = uniqueAnswers(rawAns).filter(Boolean);
-        if (choices.length < 2) {
+        const mcqData = buildAnswerEntries(rawAns, rawAnsImageUrls, "MCQ");
+        const entries = mcqData.entries;
+        if (entries.length < 2) {
           const item = form.addTextItem().setTitle(title).setRequired(true);
           safeSetPoints(item, pts);
           break;
@@ -215,49 +223,76 @@ function createFormFromActiveSpreadsheet() {
           .addMultipleChoiceItem()
           .setTitle(title)
           .setRequired(true);
-        let formChoices = choices.map((opt, i) =>
-          mcq.createChoice(stripStar(opt), i === 0)
+        let formChoices = entries.map((entry) =>
+          mcq.createChoice(
+            formatChoiceText(entry, hasAnswerImages),
+            entry.isCorrect,
+          ),
         );
         if (formChoices.length > 1) formChoices = shuffleArrayCopy(formChoices);
         mcq.setChoices(formChoices);
         safeSetPoints(mcq, pts);
+        if (questionImageUrl) {
+          addQuestionImageItem(form, question, questionImageUrl, r + 1);
+        }
+        if (hasAnswerImages) {
+          addAnswerImageItems(form, rawAns, rawAnsImageUrls, r + 1);
+        }
         break;
       }
       case "MSQ": {
-        const cleaned = uniqueAnswers(rawAns).filter(Boolean);
+        const msqData = buildAnswerEntries(rawAns, rawAnsImageUrls, "MSQ");
+        const cleaned = msqData.entries;
         if (cleaned.length < 2) {
           const item = form.addTextItem().setTitle(title).setRequired(true);
           safeSetPoints(item, pts);
           break;
         }
-        const starredChoices = cleaned.filter(isStarred);
-        if (starredChoices.length === 0) {
+        if (!msqData.hasExplicitCorrectChoices) {
           const mcq = form
             .addMultipleChoiceItem()
             .setTitle(title)
             .setRequired(true);
-          let choices = cleaned.map((opt, i) =>
-            mcq.createChoice(stripStar(opt), i === 0)
+          let choices = cleaned.map((entry) =>
+            mcq.createChoice(
+              formatChoiceText(entry, hasAnswerImages),
+              entry.isCorrect,
+            ),
           );
           if (choices.length > 1) choices = shuffleArrayCopy(choices);
           mcq.setChoices(choices);
           safeSetPoints(mcq, pts);
+          if (questionImageUrl) {
+            addQuestionImageItem(form, question, questionImageUrl, r + 1);
+          }
+          if (hasAnswerImages) {
+            addAnswerImageItems(form, rawAns, rawAnsImageUrls, r + 1);
+          }
           break;
         }
         const cb = form.addCheckboxItem().setTitle(title).setRequired(true);
-        let formChoices = cleaned.map((opt) =>
-          cb.createChoice(stripStar(opt), isStarred(opt))
+        let formChoices = cleaned.map((entry) =>
+          cb.createChoice(
+            formatChoiceText(entry, hasAnswerImages),
+            entry.isCorrect,
+          ),
         );
         formChoices = shuffleArrayCopy(formChoices);
         cb.setChoices(formChoices);
         safeSetPoints(cb, pts);
+        if (questionImageUrl) {
+          addQuestionImageItem(form, question, questionImageUrl, r + 1);
+        }
+        if (hasAnswerImages) {
+          addAnswerImageItems(form, rawAns, rawAnsImageUrls, r + 1);
+        }
         break;
       }
       default:
         throw new Error(
           `Unsupported Type "${type}" in row ${
             r + 1
-          }. Use SA, PARA, MCQ, or MSQ.`
+          }. Use SA, PARA, MCQ, or MSQ.`,
         );
     }
   }
@@ -432,11 +467,11 @@ function headerIndex(headerRow, requiredCols) {
   const idx = {};
   requiredCols.forEach((col) => {
     const i = headerRow.findIndex(
-      (h) => h.toString().trim().toLowerCase() === col.toLowerCase()
+      (h) => h.toString().trim().toLowerCase() === col.toLowerCase(),
     );
     if (i === -1)
       throw new Error(
-        `Header "${col}" not found. Got: ${headerRow.join(", ")}`
+        `Header "${col}" not found. Got: ${headerRow.join(", ")}`,
       );
     idx[col] = i;
   });
@@ -562,11 +597,208 @@ function optionalHeaderIndex(headerRow, cols) {
   return idx;
 }
 
+function getOptionalCell(row, index) {
+  if (index === undefined) return "";
+  return (row[index] || "").toString().trim();
+}
+
+function buildAnswerEntries(rawAns, rawAnsImageUrls, type) {
+  const entries = [];
+  const seen = new Set();
+
+  for (let i = 0; i < rawAns.length; i++) {
+    const raw = (rawAns[i] || "").toString().trim();
+    const imageUrl = (rawAnsImageUrls[i] || "").toString().trim();
+    if (!raw && !imageUrl) continue;
+
+    const label = String.fromCharCode(65 + i);
+    const text = stripStar(raw) || `Option ${label}`;
+    const dedupeKey = `${text.toLowerCase()}|${imageUrl}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    entries.push({
+      label,
+      text,
+      imageUrl,
+      isCorrect: type === "MSQ" ? isStarred(raw) : false,
+    });
+  }
+
+  if (entries.length === 0) {
+    return { entries, hasExplicitCorrectChoices: false };
+  }
+
+  if (type === "MCQ") {
+    entries.forEach((entry, index) => {
+      entry.isCorrect = index === 0;
+    });
+    return { entries, hasExplicitCorrectChoices: true };
+  }
+
+  const hasExplicitCorrectChoices = entries.some((entry) => entry.isCorrect);
+  if (!hasExplicitCorrectChoices) {
+    entries.forEach((entry, index) => {
+      entry.isCorrect = index === 0;
+    });
+  }
+  return { entries, hasExplicitCorrectChoices };
+}
+
+function formatChoiceText(entry, hasAnswerImages) {
+  if (!hasAnswerImages) return entry.text;
+  return `${entry.label}`;
+}
+
+function addAnswerImageItems(form, rawAns, rawAnsImageUrls, rowNumber) {
+  for (let i = 0; i < rawAnsImageUrls.length; i++) {
+    const imageUrl = (rawAnsImageUrls[i] || "").toString().trim();
+    if (!imageUrl) continue;
+
+    const label = String.fromCharCode(65 + i);
+    const answerText =
+      stripStar((rawAns[i] || "").toString().trim()) || `Option ${label}`;
+    try {
+      const blob = fetchImageBlobFromUrl(imageUrl);
+      form.addImageItem().setTitle(`${label}. ${answerText}`).setImage(blob);
+    } catch (imgErr) {
+      Logger.log(
+        `Answer image fetch failed row ${rowNumber}, ${label}: ${imgErr}`,
+      );
+    }
+  }
+}
+
+function addQuestionImageItem(form, question, imageUrl, rowNumber) {
+  try {
+    const blob = fetchImageBlobFromUrl(imageUrl);
+    form
+      .addImageItem()
+      .setTitle("Image for: " + question)
+      .setImage(blob);
+  } catch (imgErr) {
+    Logger.log(`Question image fetch failed row ${rowNumber}: ${imgErr}`);
+  }
+}
+
+function fetchImageBlobFromUrl(imageUrl) {
+  const normalized = (imageUrl || "").toString().trim();
+  if (!normalized) throw new Error("Empty image URL");
+
+  validateImageUrl(normalized);
+
+  const driveFileId = extractDriveFileId(normalized);
+  if (driveFileId) {
+    const driveBlob = DriveApp.getFileById(driveFileId).getBlob();
+    validateImageBlob(driveBlob);
+    return driveBlob;
+  }
+
+  const response = UrlFetchApp.fetch(normalized, {
+    followRedirects: false,
+    muteHttpExceptions: true,
+  });
+  const status = response.getResponseCode();
+  if (status < 200 || status >= 300) {
+    throw new Error(`Image fetch failed with HTTP ${status}`);
+  }
+
+  const headers = response.getHeaders() || {};
+  const contentType =
+    headers["Content-Type"] || headers["content-type"] || "";
+  if (!/^image\//i.test(String(contentType))) {
+    throw new Error(`URL did not return an image content type: ${contentType}`);
+  }
+
+  const blob = response.getBlob();
+  validateImageBlob(blob);
+  return blob;
+}
+
+function validateImageUrl(url) {
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error("Image URL must start with http:// or https://");
+  }
+
+  let host = "";
+  try {
+    // Prefer a real URL parser to correctly handle userinfo, ports, and IPv6.
+    const parsed = new URL(String(url));
+    host = (parsed.hostname || "").toLowerCase();
+  } catch (e) {
+    // Fallback: handle optional userinfo and bracketed IPv6 literals.
+    const hostMatch = String(url).match(
+      /^https?:\/\/(?:[^@\/\?#]*@)?(\[[^\]]+\]|[^\/\?#:]+)/i,
+    );
+    host = hostMatch && hostMatch[1] ? hostMatch[1].toLowerCase() : "";
+  }
+
+  // Strip brackets from IPv6 literals (e.g., "[::1]" -> "::1").
+  if (host.startsWith("[") && host.endsWith("]")) {
+    host = host.slice(1, -1);
+  }
+
+  if (!host) {
+    throw new Error("Invalid image URL host");
+  }
+
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1") {
+    throw new Error("Localhost image URLs are not allowed");
+  }
+
+  if (
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
+  ) {
+    throw new Error("Private network image URLs are not allowed");
+  }
+}
+
+function validateImageBlob(blob) {
+  const contentType = blob.getContentType() || "";
+  if (!/^image\//i.test(contentType)) {
+    throw new Error(`Blob is not an image (content type: ${contentType})`);
+  }
+
+  const maxImageBytes = 5 * 1024 * 1024;
+  const bytes = blob.getBytes();
+  if (bytes.length > maxImageBytes) {
+    throw new Error("Image too large (max 5MB)");
+  }
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+function extractDriveFileId(url) {
+  const value = (url || "").toString();
+  const patterns = [
+    /drive\.google\.com\/file\/d\/([a-zA-Z0-9_-]+)/,
+    /drive\.google\.com\/open\?id=([a-zA-Z0-9_-]+)/,
+    /drive\.google\.com\/uc\?.*id=([a-zA-Z0-9_-]+)/,
+    /docs\.google\.com\/uc\?.*id=([a-zA-Z0-9_-]+)/,
+  ];
+
+  for (const pattern of patterns) {
+    const match = value.match(pattern);
+    if (match && match[1]) return match[1];
+  }
+  return "";
+}
+
 /***** GOOGLE CLASSROOM INTEGRATION *****/
 
 /** Store last form result so "Post Last Form to Classroom" can reuse it */
 function storeLastFormResult(result) {
-  const props = PropertiesService.getDocumentProperties();
+  const props = PropertiesService.getUserProperties();
   props.setProperty("LAST_FORM_PUBLISHED_URL", result.publishedUrl || "");
   props.setProperty("LAST_FORM_EDIT_URL", result.editUrl || "");
   props.setProperty("LAST_FORM_TITLE", result.formTitle || "Untitled Quiz");
@@ -574,7 +806,7 @@ function storeLastFormResult(result) {
 }
 
 function getLastFormResult() {
-  const props = PropertiesService.getDocumentProperties();
+  const props = PropertiesService.getUserProperties();
   return {
     publishedUrl: props.getProperty("LAST_FORM_PUBLISHED_URL") || "",
     editUrl: props.getProperty("LAST_FORM_EDIT_URL") || "",
@@ -590,7 +822,7 @@ function confirmCreateAndPostToClassroom() {
     "Create Form & Post to Classroom",
     "Create a new Google Form quiz, link responses to this spreadsheet, " +
       "and then post it to Google Classroom?",
-    ui.ButtonSet.OK_CANCEL
+    ui.ButtonSet.OK_CANCEL,
   );
   if (res !== ui.Button.OK) return;
 
@@ -600,14 +832,14 @@ function confirmCreateAndPostToClassroom() {
     SpreadsheetApp.getActive().toast(
       "Form created. Opening Classroom dialog...",
       "Form Builder",
-      3
+      3,
     );
     showClassroomDialog();
   } catch (e) {
     SpreadsheetApp.getActive().toast(
       "Form creation failed.",
       "Form Builder",
-      5
+      5,
     );
     ui.alert("Error", e && e.message ? e.message : String(e), ui.ButtonSet.OK);
   }
@@ -622,7 +854,7 @@ function postLastFormToClassroom() {
       "No Form Found",
       "No form has been created yet from this spreadsheet.\n" +
         'Please use "Create Form (Confirm)" first.',
-      ui.ButtonSet.OK
+      ui.ButtonSet.OK,
     );
     return;
   }
@@ -680,7 +912,8 @@ function submitToClassroom(options) {
   const postType = options.postType || "assignment";
   const title = options.title || last.formTitle || "Untitled Quiz";
   const description = options.description || "";
-  const maxPoints = Number(options.maxPoints) || 100;
+  let maxPoints = Number(options.maxPoints);
+  if (Number.isNaN(maxPoints) || maxPoints < 0) maxPoints = 100;
   const dueDate = options.dueDate || "";
   const dueTime = options.dueTime || "23:59";
   const topicId = options.topicId || "";
@@ -705,17 +938,25 @@ function submitToClassroom(options) {
       materials: [{ link: { url: last.publishedUrl } }],
       maxPoints: maxPoints,
     };
+    if (topicId) courseWork.topicId = topicId;
     if (dueDate) {
-      const d = new Date(dueDate);
+      const [yearStr, monthStr, dayStr] = dueDate.split("-");
+      const year = Number(yearStr);
+      const month = Number(monthStr);
+      const day = Number(dayStr);
+      if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) {
+        throw new Error("Invalid due date format. Expected YYYY-MM-DD.");
+      }
       courseWork.dueDate = {
-        year: d.getFullYear(),
-        month: d.getMonth() + 1,
-        day: d.getDate(),
+        year: year,
+        month: month,
+        day: day,
       };
       const parts = dueTime.split(":").map(Number);
-      courseWork.dueTime = { hours: parts[0] || 23, minutes: parts[1] || 59 };
+      const hours = Number.isNaN(parts[0]) ? 23 : parts[0];
+      const minutes = Number.isNaN(parts[1]) ? 59 : parts[1];
+      courseWork.dueTime = { hours: hours, minutes: minutes };
     }
-    if (topicId) courseWork.topicId = topicId;
     Classroom.Courses.CourseWork.create(courseWork, courseId);
   }
 
@@ -728,15 +969,11 @@ function submitToClassroom(options) {
 /** Build the HTML for the Classroom dialog */
 function getClassroomDialogHtml() {
   const last = getLastFormResult();
-  const escapedTitle = (last.formTitle || "Untitled Quiz").replace(
-    /"/g,
-    "&quot;"
-  );
-  const escapedUrl = last.publishedUrl || "(no URL)";
-
+  const escapedTitle = escapeHtml(last.formTitle || "Untitled Quiz");
+  const escapedUrl = escapeHtml(last.publishedUrl || "(no URL)");
   return (
-    '<!DOCTYPE html>' +
-    "<html><head><base target=\"_top\">" +
+    "<!DOCTYPE html>" +
+    '<html><head><base target="_top">' +
     "<style>" +
     "body{font-family:Arial,sans-serif;padding:16px;margin:0;font-size:14px}" +
     "label{display:block;margin:10px 0 4px;font-weight:bold;font-size:13px}" +
