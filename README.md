@@ -10,7 +10,7 @@ Turn a **Google Sheet of questions** into a fully published **Google Forms Quiz*
 - Supports **MCQ** question type (one correct answer)
 - **Image support**
   - `ImageURL` embeds a question image
-  - `AnswerAImageURL..AnswerDImageURL` enables image-choice mode for MCQ/MSQ (labeled A-D images + selectable A-D choices)
+  - `AnswerAImageURL..AnswerDImageURL` enables image-choice mode for MCQ (labeled A-D images + selectable A-D choices)
 - Metadata support (`FormTitle`, `FormDescription`, `LimitOneResponse`)
 - Points system with **section totals**
 - **Google Classroom integration** — post quizzes as graded assignments or class materials

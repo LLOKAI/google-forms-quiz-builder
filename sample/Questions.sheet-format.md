@@ -42,7 +42,7 @@ Section | Question | Type | Points | AnswerA | AnswerB | AnswerC | AnswerD | Ima
 | **Points**     |    ✅    | Integer points for the item. Non-numeric or blank → treated as **0**.                                                     |
 | **AnswerA..D** |    ✅    | Used for `MCQ`. Provide at least 2 options.                                                |
 | **ImageURL**   |    ❌    | Optional. A public URL to an image. If provided, an image is inserted before the question in the form.                    |
-| **AnswerAImageURL..AnswerDImageURL** | ❌ | Optional. For MCQ/MSQ, each URL displays an image item labeled A..D before the question. |
+| **AnswerAImageURL..AnswerDImageURL** | ❌ | Optional. For MCQ, each URL displays an image item labeled A..D before the question. |
 
 ### Type-specific rules
 
