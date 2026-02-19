@@ -7,11 +7,7 @@ Turn a **Google Sheet of questions** into a fully published **Google Forms Quiz*
 ## ✨ Features
 
 - Define quizzes in a simple **Google Sheet** ([Questions.sheet-format.md](./sample/Questions.sheet-format.md))
-- Supports multiple question types:
-  - **SA** – Short Answer
-  - **PARA** – Paragraph
-  - **MCQ** – Multiple Choice (one correct)
-  - **MSQ** – Multiple Select (checkboxes, multiple correct)
+- Supports **MCQ** question type (one correct answer)
 - **Image support**
   - `ImageURL` embeds a question image
   - `AnswerAImageURL..AnswerDImageURL` enables image-choice mode for MCQ/MSQ (labeled A-D images + selectable A-D choices)

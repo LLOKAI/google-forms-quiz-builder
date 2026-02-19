@@ -186,6 +186,12 @@ function createFormFromActiveSpreadsheet() {
         `Missing "Question" in row ${r + 1} on sheet "${sh.getName()}"`,
       );
 
+    if (type !== "MCQ") {
+      throw new Error(
+        `Unsupported Type "${type}" in row ${r + 1}. This project is currently configured for MCQ-only quizzes.`,
+      );
+    }
+
     if (section !== currentSection) {
       currentSection = section;
       const total = sectionTotals[section] || 0;
@@ -198,25 +204,6 @@ function createFormFromActiveSpreadsheet() {
     const title = pts > 0 ? `${question}  (${pts} pts)` : question;
 
     switch (type) {
-      case "SA": {
-        const item = form.addTextItem().setTitle(title).setRequired(true);
-        safeSetPoints(item, pts);
-        if (questionImageUrl) {
-          addQuestionImageItem(form, question, questionImageUrl, r + 1);
-        }
-        break;
-      }
-      case "PARA": {
-        const item = form
-          .addParagraphTextItem()
-          .setTitle(title)
-          .setRequired(true);
-        safeSetPoints(item, pts);
-        if (questionImageUrl) {
-          addQuestionImageItem(form, question, questionImageUrl, r + 1);
-        }
-        break;
-      }
       case "MCQ": {
         const mcqData = buildAnswerEntries(rawAns, rawAnsImageUrls, "MCQ");
         const entries = mcqData.entries;
@@ -246,59 +233,9 @@ function createFormFromActiveSpreadsheet() {
         }
         break;
       }
-      case "MSQ": {
-        const msqData = buildAnswerEntries(rawAns, rawAnsImageUrls, "MSQ");
-        const cleaned = msqData.entries;
-        if (cleaned.length < 2) {
-          const item = form.addTextItem().setTitle(title).setRequired(true);
-          safeSetPoints(item, pts);
-          break;
-        }
-        if (!msqData.hasExplicitCorrectChoices) {
-          const mcq = form
-            .addMultipleChoiceItem()
-            .setTitle(title)
-            .setRequired(true);
-          let choices = cleaned.map((entry) =>
-            mcq.createChoice(
-              formatChoiceText(entry, hasAnswerImages),
-              entry.isCorrect,
-            ),
-          );
-          if (choices.length > 1) choices = shuffleArrayCopy(choices);
-          mcq.setChoices(choices);
-          safeSetPoints(mcq, pts);
-          if (questionImageUrl) {
-            addQuestionImageItem(form, question, questionImageUrl, r + 1);
-          }
-          if (hasAnswerImages) {
-            addAnswerImageItems(form, rawAns, rawAnsImageUrls, r + 1);
-          }
-          break;
-        }
-        const cb = form.addCheckboxItem().setTitle(title).setRequired(true);
-        let formChoices = cleaned.map((entry) =>
-          cb.createChoice(
-            formatChoiceText(entry, hasAnswerImages),
-            entry.isCorrect,
-          ),
-        );
-        formChoices = shuffleArrayCopy(formChoices);
-        cb.setChoices(formChoices);
-        safeSetPoints(cb, pts);
-        if (questionImageUrl) {
-          addQuestionImageItem(form, question, questionImageUrl, r + 1);
-        }
-        if (hasAnswerImages) {
-          addAnswerImageItems(form, rawAns, rawAnsImageUrls, r + 1);
-        }
-        break;
-      }
       default:
         throw new Error(
-          `Unsupported Type "${type}" in row ${
-            r + 1
-          }. Use SA, PARA, MCQ, or MSQ.`,
+          `Unsupported Type "${type}" in row ${r + 1}. Use MCQ only.`,
         );
     }
   }

@@ -38,23 +38,13 @@ Section | Question | Type | Points | AnswerA | AnswerB | AnswerC | AnswerD | Ima
 | -------------- | :------: | ------------------------------------------------------------------------------------------------------------------------- |
 | **Section**    |    ✅    | Groups questions and inserts a page break titled: `"<section> Section — <sum pts> pts total"`.                            |
 | **Question**   |    ✅    | The prompt shown to students.                                                                                             |
-| **Type**       |    ✅    | One of: `SA` (short answer), `PARA` (paragraph), `MCQ` (single choice), `MSQ` (checkboxes). Matching is case-insensitive. |
+| **Type**       |    ✅    | Must be `MCQ` (single choice). Matching is case-insensitive. |
 | **Points**     |    ✅    | Integer points for the item. Non-numeric or blank → treated as **0**.                                                     |
-| **AnswerA..D** |    ✅    | Used for `MCQ`/`MSQ`. Leave blanks if not needed (e.g., for `SA`, `PARA`).                                                |
+| **AnswerA..D** |    ✅    | Used for `MCQ`. Provide at least 2 options.                                                |
 | **ImageURL**   |    ❌    | Optional. A public URL to an image. If provided, an image is inserted before the question in the form.                    |
 | **AnswerAImageURL..AnswerDImageURL** | ❌ | Optional. For MCQ/MSQ, each URL displays an image item labeled A..D before the question. |
 
 ### Type-specific rules
-
-- **SA (Short Answer)**
-
-  - Free-text; `AnswerA..D` ignored.
-  - Points supported.
-
-- **PARA (Paragraph)**
-
-  - Long answer; `AnswerA..D` ignored.
-  - Points supported.
 
 - **MCQ (Multiple Choice, one correct)**
 
@@ -63,13 +53,6 @@ Section | Question | Type | Points | AnswerA | AnswerB | AnswerC | AnswerD | Ima
   - Options are **shuffled** for students.
   - If < 2 options remain after de-dupe → falls back to **SA**.
 
-- **MSQ (Checkboxes, multiple correct)**
-  - Mark each correct option by prefixing with `*` (asterisk). Example: `*2/3`.
-  - Provide ≥ 2 options. At least **1 starred** option required.
-  - Options are **shuffled** for students.
-  - If no starred options → downgraded to **MCQ** (with `AnswerA` correct).
-  - If < 2 options after de-dupe → falls back to **SA**.
-  - The `*` is **not shown** to students; it's only for the answer key.
 
 ## 4) Image support
 
@@ -78,7 +61,7 @@ Section | Question | Type | Points | AnswerA | AnswerB | AnswerC | AnswerD | Ima
 - The script will fetch the image and insert it as an **Image item** directly before the question in the form.
 - If the URL is invalid or unreachable, the image is skipped with a log warning (the question is still created).
 - To show images for answer options, add `AnswerAImageURL..AnswerDImageURL`.
-- In answer-image mode, the form displays labeled images (`A`, `B`, `C`, `D`) and the MCQ/MSQ choices are those labels.
+- In answer-image mode, the form displays labeled images (`A`, `B`, `C`, `D`) and the MCQ choices are those labels.
 - **Note:** this is not embedded image-inside-choice rendering (a Forms API limitation); it is labeled image items plus selectable labels.
 
 ## 5) Answer handling
@@ -104,9 +87,8 @@ Section | Question | Type | Points | AnswerA | AnswerB | AnswerC | AnswerD | Ima
 
 ## 8) Tips & gotchas
 
-- Keep `Type` limited to: `SA`, `PARA`, `MCQ`, `MSQ`.
+- Keep `Type` set to `MCQ` only.
 - `Points` must be integer; non-numeric = 0.
-- For `MSQ`, remember to star (`*`) every correct option.
 - Avoid trailing spaces (`"0.3 "` → `"0.3"`).
 - Fractions/percentages/decimals can be plain text: `2/3`, `12.5%`, `0.125`.
 - `ImageURL` must be publicly accessible — private URLs will fail to fetch.

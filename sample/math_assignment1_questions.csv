@@ -4,12 +4,9 @@ LimitOneResponse,FALSE
 
 Section,Question,Type,Points,AnswerA,AnswerB,AnswerC,AnswerD,ImageURL,AnswerAImageURL,AnswerBImageURL,AnswerCImageURL,AnswerDImageURL
 Easy,Which is larger: 0.3 or 0.25?,MCQ,2,0.3,0.25,,,,,,,
-Easy,Explain steps to get 25% as a decimal.,SA,2,,,,,,,,,
 Easy,What is 3/10 as a decimal?,MCQ,2,0.3,0.03,3,0.13,,,,,
-Medium,Mark all that equal 2/3.,MSQ,3,*2/3,*0.6667,0.65,*0.666...,,,,,
 Medium,Convert 0.6 into a fraction in simplest form.,MCQ,3,3/5,6/10,2/3,5/6,,,,,
-Medium,Explain why 39% is less than 0.4.,PARA,3,,,,,,,,,
 Medium,Write 50% as a decimal.,MCQ,3,0.5,0.45,0.55,0.05,,,,,
 Complex,Simplify: 12/18.,MCQ,4,2/3,4/6,6/9,3/4,,,,,
-Complex,Select all values equivalent to 0.125.,MSQ,4,*1/8,*12.5%,1/6,*0.125,,,,,
+Complex,Which equals 0.125?,MCQ,4,1/8,12.5%,1/6,0.25,,,,,
 Complex,What is 35% of 200?,MCQ,4,70,35,75,65,,,,,
