@@ -6,15 +6,11 @@ const MAKE_PUBLIC_ANYONE_WITH_LINK = true; // set false if you only want your do
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("Form Builder")
-    .addItem("Create Form (Confirm)", "confirmAndCreateForm")
     .addItem(
       "Create Form & Post to Classroom",
       "confirmCreateAndPostToClassroom",
     )
     .addSeparator()
-    .addItem("Post Last Form to Classroom", "postLastFormToClassroom")
-    .addSeparator()
-    .addItem("Sync Draft Grades to Classroom", "syncDraftGradesToClassroom")
     .addItem(
       "Finalize & Return Grades to Classroom",
       "finalizeAndReturnGradesToClassroom",
@@ -23,46 +19,6 @@ function onOpen() {
 }
 
 /***** ENTRYPOINT *****/
-function confirmAndCreateForm() {
-  const ui = SpreadsheetApp.getUi();
-  const res = ui.alert(
-    "Create Form",
-    "Create a new Google Form quiz and link responses to this spreadsheet (new tab)?",
-    ui.ButtonSet.OK_CANCEL,
-  );
-  if (res !== ui.Button.OK) return;
-
-  try {
-    const result = createFormFromActiveSpreadsheet();
-    storeLastFormResult(result);
-    SpreadsheetApp.getActive().toast(
-      "Form created successfully.",
-      "Form Builder",
-      5,
-    );
-    ui.alert(
-      "Success",
-      "Form created. Responses will be stored in this spreadsheet (new tab).\n\n" +
-        "Form (student link):\n" +
-        result.publishedUrl +
-        "\n\n" +
-        "Form (edit link):\n" +
-        result.editUrl +
-        "\n\n" +
-        "Responses (this file):\n" +
-        result.responsesUrl +
-        "\n",
-      ui.ButtonSet.OK,
-    );
-  } catch (e) {
-    SpreadsheetApp.getActive().toast(
-      "Form creation failed.",
-      "Form Builder",
-      5,
-    );
-    ui.alert("Error", e && e.message ? e.message : String(e), ui.ButtonSet.OK);
-  }
-}
 
 /***** CORE LOGIC (Section, Question, Type, Points, AnswerA..D) *****/
 function createFormFromActiveSpreadsheet() {
@@ -721,7 +677,7 @@ function extractDriveFileId(url) {
 
 /***** GOOGLE CLASSROOM INTEGRATION *****/
 
-/** Store last form result so "Post Last Form to Classroom" can reuse it */
+/** Store last form result for Classroom posting metadata */
 function storeLastFormResult(result) {
   const props = PropertiesService.getUserProperties();
   props.setProperty("LAST_FORM_PUBLISHED_URL", result.publishedUrl || "");
@@ -756,6 +712,146 @@ function getLastClassroomTarget() {
   };
 }
 
+function setupAutoGradingForForm(formId, courseId, courseWorkId, title) {
+  if (!formId || !courseId || !courseWorkId) return;
+
+  const form = FormApp.openById(formId);
+  const attemptMode = form.hasLimitOneResponsePerUser() ? "first" : "latest";
+
+  const targets = readAutoGradeTargets();
+  targets[formId] = {
+    courseId: courseId,
+    courseWorkId: courseWorkId,
+    title: title || "",
+    attemptMode: attemptMode,
+    updatedAt: new Date().toISOString(),
+  };
+  writeAutoGradeTargets(targets);
+
+  ensureAutoGradeTriggerForForm(formId);
+}
+
+function readAutoGradeTargets() {
+  const raw =
+    PropertiesService.getScriptProperties().getProperty("AUTO_GRADE_TARGETS") ||
+    "{}";
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    return {};
+  }
+}
+
+function writeAutoGradeTargets(targets) {
+  PropertiesService.getScriptProperties().setProperty(
+    "AUTO_GRADE_TARGETS",
+    JSON.stringify(targets || {}),
+  );
+}
+
+function readAutoGradeState() {
+  const raw =
+    PropertiesService.getScriptProperties().getProperty("AUTO_GRADE_STATE") ||
+    "{}";
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    return {};
+  }
+}
+
+function writeAutoGradeState(state) {
+  PropertiesService.getScriptProperties().setProperty(
+    "AUTO_GRADE_STATE",
+    JSON.stringify(state || {}),
+  );
+}
+
+function ensureAutoGradeTriggerForForm(formId) {
+  const triggers = ScriptApp.getProjectTriggers();
+  const hasTrigger = triggers.some(
+    (trigger) =>
+      trigger.getHandlerFunction() === "handleAutoGradeFormSubmit" &&
+      trigger.getTriggerSource() === ScriptApp.TriggerSource.FORMS &&
+      trigger.getTriggerSourceId() === formId,
+  );
+  if (hasTrigger) return;
+
+  ScriptApp.newTrigger("handleAutoGradeFormSubmit")
+    .forForm(formId)
+    .onFormSubmit()
+    .create();
+}
+
+function handleAutoGradeFormSubmit(e) {
+  try {
+    if (!e || !e.source || !e.response) return;
+
+    const formId = e.source.getId();
+    const targets = readAutoGradeTargets();
+    const target = targets[formId];
+    if (!target || !target.courseId || !target.courseWorkId) return;
+
+    const email = String(e.response.getRespondentEmail() || "")
+      .toLowerCase()
+      .trim();
+    if (!email) return;
+
+    const score = parseScoreCell(e.response.getScore());
+    if (score == null) return;
+
+    const attemptMode = target.attemptMode || "latest";
+    const state = readAutoGradeState();
+    const formState = state[formId] || {};
+
+    if (attemptMode === "first" && formState[email]) {
+      return;
+    }
+
+    const submission = getSubmissionForStudent(
+      target.courseId,
+      target.courseWorkId,
+      email,
+    );
+    if (!submission || !submission.id) return;
+
+    patchSubmissionGrade(
+      target.courseId,
+      target.courseWorkId,
+      submission.id,
+      score,
+      true,
+    );
+
+    if (submission.state === "TURNED_IN") {
+      returnStudentSubmission(target.courseId, target.courseWorkId, submission.id);
+    }
+
+    formState[email] = {
+      score: score,
+      syncedAt: new Date().toISOString(),
+      submissionId: submission.id,
+    };
+    state[formId] = formState;
+    writeAutoGradeState(state);
+  } catch (error) {
+    Logger.log("handleAutoGradeFormSubmit error: " + error);
+  }
+}
+
+function getSubmissionForStudent(courseId, courseWorkId, email) {
+  const response = Classroom.Courses.CourseWork.StudentSubmissions.list(
+    courseId,
+    courseWorkId,
+    {
+      userId: email,
+      pageSize: 1,
+    },
+  );
+  const submissions = response.studentSubmissions || [];
+  return submissions.length ? submissions[0] : null;
+}
+
 /** Entrypoint: Create Form then immediately post to Classroom */
 function confirmCreateAndPostToClassroom() {
   const ui = SpreadsheetApp.getUi();
@@ -784,22 +880,6 @@ function confirmCreateAndPostToClassroom() {
     );
     ui.alert("Error", e && e.message ? e.message : String(e), ui.ButtonSet.OK);
   }
-}
-
-/** Entrypoint: Post last created form to Classroom */
-function postLastFormToClassroom() {
-  const ui = SpreadsheetApp.getUi();
-  const last = getLastFormResult();
-  if (!last.publishedUrl) {
-    ui.alert(
-      "No Form Found",
-      "No form has been created yet from this spreadsheet.\n" +
-        'Please use "Create Form (Confirm)" first.',
-      ui.ButtonSet.OK,
-    );
-    return;
-  }
-  showClassroomDialog();
 }
 
 /** Show the Classroom course picker modal dialog */
@@ -903,6 +983,14 @@ function submitToClassroom(options) {
     );
     if (createdCourseWork && createdCourseWork.id) {
       storeLastClassroomTarget(courseId, createdCourseWork.id, title);
+      if (last.formId) {
+        setupAutoGradingForForm(
+          last.formId,
+          courseId,
+          createdCourseWork.id,
+          title,
+        );
+      }
     }
   }
 
@@ -912,20 +1000,13 @@ function submitToClassroom(options) {
   };
 }
 
-function syncDraftGradesToClassroom() {
-  runClassroomGradeSync({ finalizeAndReturn: false });
-}
-
 function finalizeAndReturnGradesToClassroom() {
-  runClassroomGradeSync({ finalizeAndReturn: true });
+  runClassroomGradeSync();
 }
 
-function runClassroomGradeSync(options) {
+function runClassroomGradeSync() {
   const ui = SpreadsheetApp.getUi();
-  const finalizeAndReturn = !!(options && options.finalizeAndReturn);
-  const actionLabel = finalizeAndReturn
-    ? "Finalize & Return Grades"
-    : "Sync Draft Grades";
+  const actionLabel = "Finalize & Return Grades";
 
   const target = getLastClassroomTarget();
   if (!target.courseId || !target.courseWorkId) {
@@ -984,21 +1065,19 @@ function runClassroomGradeSync(options) {
         target.courseWorkId,
         submission.id,
         score,
-        finalizeAndReturn,
+        true,
       );
       patched++;
 
-      if (finalizeAndReturn) {
-        if (submission.state === "TURNED_IN") {
-          returnStudentSubmission(
-            target.courseId,
-            target.courseWorkId,
-            submission.id,
-          );
-          returned++;
-        } else if (submission.state !== "RETURNED") {
-          skippedState++;
-        }
+      if (submission.state === "TURNED_IN") {
+        returnStudentSubmission(
+          target.courseId,
+          target.courseWorkId,
+          submission.id,
+        );
+        returned++;
+      } else if (submission.state !== "RETURNED") {
+        skippedState++;
       }
     });
 
