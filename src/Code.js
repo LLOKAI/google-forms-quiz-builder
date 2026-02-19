@@ -768,13 +768,24 @@ function writeAutoGradeState(state) {
 }
 
 function ensureAutoGradeTriggerForForm(formId) {
+  const targets = readAutoGradeTargets();
+  const activeFormIds = new Set(Object.keys(targets));
+
   const triggers = ScriptApp.getProjectTriggers();
-  const hasTrigger = triggers.some(
-    (trigger) =>
-      trigger.getHandlerFunction() === "handleAutoGradeFormSubmit" &&
-      trigger.getTriggerSource() === ScriptApp.TriggerSource.FORMS &&
-      trigger.getTriggerSourceId() === formId,
-  );
+  let hasTrigger = false;
+
+  triggers.forEach((trigger) => {
+    if (trigger.getHandlerFunction() !== "handleAutoGradeFormSubmit") return;
+    if (trigger.getTriggerSource() !== ScriptApp.TriggerSource.FORMS) return;
+
+    const triggeredFormId = trigger.getTriggerSourceId();
+    if (triggeredFormId === formId) {
+      hasTrigger = true;
+    } else if (!activeFormIds.has(triggeredFormId)) {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+
   if (hasTrigger) return;
 
   ScriptApp.newTrigger("handleAutoGradeFormSubmit")
@@ -800,40 +811,48 @@ function handleAutoGradeFormSubmit(e) {
     const score = parseScoreCell(e.response.getScore());
     if (score == null) return;
 
-    const attemptMode = target.attemptMode || "latest";
-    const state = readAutoGradeState();
-    const formState = state[formId] || {};
-
-    if (attemptMode === "first" && formState[email]) {
-      return;
-    }
-
     const submission = getSubmissionForStudent(
       target.courseId,
       target.courseWorkId,
       email,
     );
-    if (!submission || !submission.id) return;
+    if (!submission || !submission.id || !submission.userId) return;
 
-    patchSubmissionGrade(
-      target.courseId,
-      target.courseWorkId,
-      submission.id,
-      score,
-      true,
-    );
+    const attemptMode = target.attemptMode || "latest";
+    const userId = String(submission.userId);
 
-    if (submission.state === "TURNED_IN") {
-      returnStudentSubmission(target.courseId, target.courseWorkId, submission.id);
+    const lock = LockService.getScriptLock();
+    lock.waitLock(10000);
+    try {
+      const state = readAutoGradeState();
+      const formState = state[formId] || {};
+
+      if (attemptMode === "first" && formState[userId]) {
+        return;
+      }
+
+      patchSubmissionGrade(
+        target.courseId,
+        target.courseWorkId,
+        submission.id,
+        score,
+        true,
+      );
+
+      if (submission.state === "TURNED_IN") {
+        returnStudentSubmission(target.courseId, target.courseWorkId, submission.id);
+      }
+
+      formState[userId] = {
+        score: score,
+        syncedAt: new Date().toISOString(),
+        submissionId: submission.id,
+      };
+      state[formId] = formState;
+      writeAutoGradeState(state);
+    } finally {
+      lock.releaseLock();
     }
-
-    formState[email] = {
-      score: score,
-      syncedAt: new Date().toISOString(),
-      submissionId: submission.id,
-    };
-    state[formId] = formState;
-    writeAutoGradeState(state);
   } catch (error) {
     Logger.log("handleAutoGradeFormSubmit error: " + error);
   }
@@ -1083,7 +1102,7 @@ function runClassroomGradeSync() {
 
     ui.alert(
       actionLabel,
-      `Done.\n\nPatched grades: ${patched}\nReturned submissions: ${returned}\nSkipped (no email mapping): ${skippedNoEmail}\nSkipped (no score): ${skippedNoScore}\nSkipped (state not TURNED_IN): ${skippedState}`,
+      `Done.\n\nPatched grades: ${patched}\nReturned submissions: ${returned}\nSkipped (no email mapping): ${skippedNoEmail}\nSkipped (no score): ${skippedNoScore}\nSkipped (state neither TURNED_IN nor RETURNED): ${skippedState}`,
       ui.ButtonSet.OK,
     );
   } catch (error) {
@@ -1097,19 +1116,25 @@ function runClassroomGradeSync() {
 
 function getLatestResponseScoresByEmail() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const candidateSheet = ss
+  const responseSheets = ss
     .getSheets()
-    .find((sheet) => /^form responses/i.test(sheet.getName()));
+    .filter((sheet) => /^form responses/i.test(sheet.getName()));
+  const candidateSheet =
+    responseSheets.length > 0 ? responseSheets[responseSheets.length - 1] : null;
   if (!candidateSheet) {
     throw new Error("Response sheet not found (expected tab starting with 'Form Responses').");
   }
 
-  const values = candidateSheet.getDataRange().getDisplayValues();
-  if (!values || values.length < 2) {
+  const lastRow = candidateSheet.getLastRow();
+  const lastColumn = candidateSheet.getLastColumn();
+  if (lastRow < 1 || lastColumn < 1) {
     throw new Error("Response sheet has no data rows.");
   }
 
-  const header = values[0].map((value) => String(value || "").trim());
+  const headerRowValues = candidateSheet
+    .getRange(1, 1, 1, lastColumn)
+    .getDisplayValues()[0];
+  const header = headerRowValues.map((value) => String(value || "").trim());
   const emailIndex = header.findIndex((name) => /email/i.test(name));
   const scoreIndex = header.findIndex((name) => /score/i.test(name));
 
@@ -1119,13 +1144,27 @@ function getLatestResponseScoresByEmail() {
     );
   }
 
+  if (lastRow < 2) {
+    throw new Error("Response sheet has no data rows.");
+  }
+
+  const emailColumn = emailIndex + 1;
+  const scoreColumn = scoreIndex + 1;
+  const dataRowCount = lastRow - 1;
+
+  const emailValues = candidateSheet
+    .getRange(2, emailColumn, dataRowCount, 1)
+    .getDisplayValues();
+  const scoreValues = candidateSheet
+    .getRange(2, scoreColumn, dataRowCount, 1)
+    .getDisplayValues();
+
   const byEmail = {};
-  for (let rowIndex = 1; rowIndex < values.length; rowIndex++) {
-    const row = values[rowIndex];
-    const email = String(row[emailIndex] || "").toLowerCase().trim();
+  for (let offset = 0; offset < dataRowCount; offset++) {
+    const email = String(emailValues[offset][0] || "").toLowerCase().trim();
     if (!email) continue;
 
-    const parsedScore = parseScoreCell(row[scoreIndex]);
+    const parsedScore = parseScoreCell(scoreValues[offset][0]);
     if (parsedScore == null) continue;
     byEmail[email] = parsedScore;
   }
